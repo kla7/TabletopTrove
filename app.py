@@ -70,17 +70,14 @@ filters = st.session_state.apply_filters
 with st.expander('Filter options'):
     base_only = st.checkbox(
         'Only show base games (no expansions)',
-        # value=filters['base_only'],
         key='base_only'
     )
     include_large_players = st.checkbox(
         'Include games for 12+ players',
-        # value=filters['include_large_players'],
         key='include_large_players'
     )
     include_large_playtime = st.checkbox(
         'Include games with playtime over 360 minutes (6 hours)',
-        # value=filters['include_large_playtime'],
         key='include_large_playtime'
     )
 
@@ -98,7 +95,6 @@ with st.expander('Filter options'):
         'Number of Players',
         min_value=min(all_min_players),
         max_value=max_players_cap,  # max is 11299
-        # value=filters['players'],
         step=1,
         key='players'
     )
@@ -107,7 +103,6 @@ with st.expander('Filter options'):
         'Playtime (minutes)',
         min_value=min(all_min_playtime),
         max_value=max_playtime_cap,  # max is 60120
-        # value=filters['playtime'],
         step=10,
         key='playtime'
     )
