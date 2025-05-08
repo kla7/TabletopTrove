@@ -2,8 +2,13 @@ import streamlit as st
 import query_faiss as qf
 import torch
 from sentence_transformers import SentenceTransformer
+from transformers import pipeline
+from huggingface_hub import login
+import os
 
 torch.classes.__path__ = []
+
+login(os.environ.get('LLAMA-3.2'))
 
 
 @st.cache_resource
@@ -13,12 +18,14 @@ def load_model():
 
 @st.cache_resource
 def get_index():
-    return qf.load_faiss_index('sampled_faiss.index')
+    # return qf.load_faiss_index('sampled_faiss.index')
+    return qf.load_faiss_index('faiss.index')
 
 
 @st.cache_data
 def get_metadata():
-    data = qf.load_metadata('desc_sampled_metadata.json')
+    # data = qf.load_metadata('desc_sampled_metadata.json')
+    data = qf.load_metadata('desc_metadata.json')
     for game in data:
         game['min_players'] = int(game['min_players']) if game['min_players'].isdigit() else None
         game['max_players'] = int(game['max_players']) if game['max_players'].isdigit() else None
@@ -29,14 +36,58 @@ def get_metadata():
     return data
 
 
+@st.cache_resource
+def load_generator():
+    return pipeline(
+        'text-generation',
+        model='meta-llama/Llama-3.2-1B-Instruct',
+        device_map='cuda'
+    )
+
+
+def generate_answer(query: str, retrieved_passages: list[str]) -> str:
+    combined_prompt = ("**System prompt:** You are a helpful assistant and board game expert. "
+                       "Use the relevant passages below to recommend ONE game based on the query. "
+                       "Provide a clear response that summarizes the passage and game description "
+                       "for the selected game. Make sure to include the number of players "
+                       "it supports and how long typical playtime is, if known. "
+                       "End your answer with a complete sentence. "
+                       "Do not repeat the system prompt. "
+                       "Do not use external sources.\n\n")
+
+    combined_prompt += (f'**Query:** {query}\n\n'
+                        f'**Relevant passages:**\n\n')
+
+    for idx, passage in enumerate(retrieved_passages):
+        combined_prompt += f'[Game #{idx + 1}]\n\n{passage}\n\n'
+
+    combined_prompt += (f'**Based on the relevant passages, select ONE game to recommend '
+                        f'and provide a comprehensive description for the selected game. '
+                        f'Include information about the number of players and typical playtime if known.**')
+
+    eos_token_id = st.session_state.generator_pipeline.tokenizer.eos_token_id
+
+    output = st.session_state.generator_pipeline(
+        combined_prompt,
+        max_new_tokens=300,
+        do_sample=True,
+        temperature=0.3,
+        pad_token_id=eos_token_id,
+        eos_token_id=eos_token_id
+    )[0]['generated_text']
+
+    answer = output.replace(combined_prompt, '').strip()
+    return answer
+
+
 model = load_model()
 index = get_index()
 metadata = get_metadata()
 
-st.title('Tabletop Trove')
-query = st.text_input('Enter your search query')
+if 'generator_pipeline' not in st.session_state:
+    st.session_state.generator_pipeline = load_generator()
 
-# SEARCH FILTERS
+st.title('Tabletop Trove')
 
 all_min_players = [game['min_players'] for game in metadata if game['min_players'] is not None]
 all_max_players = [game['max_players'] for game in metadata if game['max_players'] is not None]
@@ -44,9 +95,13 @@ all_min_playtime = [game['min_playtime'] for game in metadata if game['min_playt
 all_max_playtime = [game['max_playtime'] for game in metadata if game['max_playtime'] is not None]
 all_avg_ratings = [item['avg_rating'] for item in metadata if item['avg_rating'] is not None]
 
+query = st.text_input('What kind of board game are you looking for?', key='query')
+
+# -- SEARCH FILTERS --
+
 default_filters = {
-    'players': (min(all_min_players), min(max(all_min_players), 12)),
-    'playtime': (min(all_min_playtime), min(max(all_min_playtime), 360)),
+    'players': (min(all_min_players), min(max(all_max_players), 12)),
+    'playtime': (min(all_min_playtime), min(max(all_max_playtime), 360)),
     'rating': (0.0, 10.0),
     'base_only': False,
     'include_large_players': False,
@@ -111,7 +166,6 @@ with st.expander('Filter options'):
         'Average rating',
         min_value=0.0,
         max_value=10.0,
-        # value=filters['rating'],
         step=1.0,
         key='rating'
     )
@@ -142,17 +196,15 @@ base_only = filters['base_only']
 include_large_players = filters['include_large_players']
 include_large_playtime = filters['include_large_playtime']
 
-if query:
-    query_embedding = qf.encode_query(query, model)
-    distances, indices = qf.search_index(query_embedding, index, k=10)
-    results = qf.retrieve_results(distances, indices, metadata)
+# -- QUERY FAISS --
 
+if query:
     filtered_results = qf.search_boardgames(
         query,
         model,
         index,
         metadata,
-        k=10,
+        k=20,
         base_only=base_only,
         min_players=min_players,
         max_players=max_players,
@@ -162,47 +214,56 @@ if query:
         max_rating=max_rating
     )
 
-    for i, game in enumerate(filtered_results, 1):
-        st.markdown(f'### {i}. {game["name"]}')
-        st.markdown(f'**Description:** {game["description"]}')
-        st.markdown(f'**Category:** {game["category"]}')
-        st.markdown(f'**Mechanic:** {game["mechanic"]}')
+    passages = []
+
+    st.info(f'**Results found**: {len(filtered_results)}')
+
+    for game in filtered_results:
+        passage = f'**{game["name"]}**: '
+
+        if game['category'] != 'None':
+            passage += f'It falls under the following categories: {game["category"]}. '
+        if game['mechanic'] != 'None':
+            passage += f'It has the following mechanics: {game["mechanic"]}. '
 
         if game['min_players'] == game['max_players'] and game['min_players'] == 0:
-            st.markdown(f'**Players:** Unknown')
+            pass
         elif game['min_players'] != 0 and game['max_players'] == 0:
-            st.markdown(f'**Players:** {game["min_players"]}')
+            passage += f'It supports {game["min_players"]} players. '
         elif game['min_players'] == 0 and game['max_players'] != 0:
-            st.markdown(f'**Players:** {game["max_players"]}')
+            passage += f'It supports {game["max_players"]} players. '
         elif game['min_players'] == game['max_players']:
-            st.markdown(f'**Players:** {game["min_players"]}')
+            passage += f'It supports {game["min_players"]} players. '
         else:
-            st.markdown(f'**Players:** {game["min_players"]}-{game["max_players"]}')
+            passage += f'It supports {game["min_players"]}-{game["max_players"]} players. '
 
         if game['min_playtime'] == game['max_playtime'] and game['min_playtime'] == 0:
-            st.markdown(f'**Playtime:** Unknown')
-        elif game['min_playtime'] != 0 and game['max_players'] == 0:
-            st.markdown(f'**Playtime:** {game["min_playtime"]} minutes')
+            pass
+        elif game['min_playtime'] != 0 and game['max_playtime'] == 0:
+            passage += f'Typical playtime is {game["min_playtime"]} minutes. '
         elif game['min_playtime'] == 0 and game['max_playtime'] != 0:
-            st.markdown(f'**Playtime:** {game["max_playtime"]} minutes')
+            passage += f'Typical playtime is {game["max_playtime"]} minutes. '
         elif game['min_playtime'] == game['max_playtime']:
-            st.markdown(f'**Playtime:** {game["min_playtime"]} minutes')
+            passage += f'Typical playtime is {game["min_playtime"]} minutes. '
         else:
-            st.markdown(f'**Playtime:** {game["min_playtime"]}-{game["max_playtime"]} minutes')
+            passage += f'Typical playtime is {game["min_playtime"]}-{game["max_playtime"]} minutes. '
 
-        if game['min_age'] == 0:
-            st.markdown(f'**Age:** Unknown')
-        else:
-            st.markdown(f'**Age:** {game["min_age"]}+')
-
-        st.markdown(f'**Type:** {game["type_desc"]}')
+        if game['min_age'] > 0:
+            passage += f'Recommended for ages {game["min_age"]} and up. '
 
         if game['type'] == 'boardgameexpansion':
-            st.markdown(f'**Expansion:** {game["expansion_desc"]}')
+            passage += f'This is an expansion: {game["expansion_desc"]}. '
 
-        if game['avg_rating'] == 0.0:
-            st.markdown(f'**Average rating:** None')
-        else:
-            st.markdown(f'**Average rating:** {game["avg_rating_desc"]}')
+        if game['avg_rating'] > 0.0:
+            passage += f'Average rating: {game["avg_rating_desc"]}. '
 
-        st.markdown('---')
+        passage += f'{game["description"]}'
+
+        passages.append(passage)
+
+# -- LLM --
+
+    if st.button('Generate answer', key='generate'):
+        with st.spinner('Generating answer...'):
+            answer = generate_answer(query, passages)
+            st.markdown(f'### Answer:\n\n{answer}')

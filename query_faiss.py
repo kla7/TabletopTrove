@@ -45,19 +45,19 @@ def search_boardgames(query, model, index, metadata, k=10, base_only=False, min_
     filtered = []
 
     for _, item in results:
+        if item['min_players'] > item['max_players']:
+            item['max_players'] = item['min_players']
+
+        if item['min_playtime'] > item['max_playtime']:
+            item['max_playtime'] = item['min_playtime']
+
         if base_only and item['type'] != 'boardgame':
             continue
-        if min_players is not None and item['min_players'] < min_players:
+        if item['max_players'] < min_players or item['min_players'] > max_players:
             continue
-        if max_players is not None and item['max_players'] > max_players:
+        if item['max_playtime'] < min_playtime or item['min_playtime'] > max_playtime:
             continue
-        if min_playtime is not None and item['min_playtime'] < min_playtime:
-            continue
-        if max_playtime is not None and item['max_playtime'] > max_playtime:
-            continue
-        if min_rating is not None and item['avg_rating'] < min_rating:
-            continue
-        if max_rating is not None and item['avg_rating'] > max_rating:
+        if item['avg_rating'] < min_rating or item['avg_rating'] > max_rating:
             continue
 
         filtered.append(item)

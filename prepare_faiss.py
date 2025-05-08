@@ -4,6 +4,10 @@ import faiss
 import numpy as np
 from tqdm import tqdm
 import json
+import torch
+import argparse
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 def prepare_faiss(sample_data=False, sample_base_size=700, sample_expansion_size=300):
@@ -58,13 +62,17 @@ def prepare_faiss(sample_data=False, sample_base_size=700, sample_expansion_size
 
     df["embedding"] = df[df.columns].agg(" | ".join, axis=1)
 
-    embedder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    embedder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device=device)
 
     embeddings = []
 
-    for text in tqdm(df["embedding"].tolist(), desc="Encoding embeddings", unit="row"):
-        embedding = embedder.encode([text], convert_to_numpy=True)
-        embeddings.append(embedding[0])
+    if sample_data:
+        for text in tqdm(df["embedding"].tolist(), desc="Encoding embeddings", unit="row"):
+            embedding = embedder.encode([text], convert_to_numpy=True)
+            embeddings.append(embedding[0])
+    else:
+        texts = df["embedding"].tolist()
+        embeddings = embedder.encode(texts, convert_to_numpy=True, show_progress_bar=True, batch_size=64)
 
     embeddings = np.array(embeddings, dtype='float32')
     embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -128,9 +136,20 @@ def rating_desc(rating: str) -> str:
         label = 'Average rated game'
     else:
         label = 'Low rated game'
-    return f'{label} ({rating:.1f})'
+    return f'{label} ({rating:.1f}/10.0)'
 
 
 if __name__ == "__main__":
-    prepare_faiss(sample_data=True)
-    # prepare_faiss(sample_data=False)
+    parser = argparse.ArgumentParser(
+        prog='prepare_faiss.py',
+        description=('Get embeddings and index files for FAISS. The full dataset has ~94k entries. '
+                     'Sampling the dataset will produce files for 1000 entries: 700 base games and 300 extensions.')
+    )
+    parser.add_argument(
+        '-s', '--sample',
+        action='store_true',
+        help='A boolean determining whether the data should be sampled.'
+    )
+    args = parser.parse_args()
+
+    prepare_faiss(sample_data=args.sample)
